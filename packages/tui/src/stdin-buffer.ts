@@ -24,6 +24,15 @@ const DEFAULT_SEQUENCE_TIMEOUT_MS = 50;
 const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+/**
+ * One or more unterminated OSC color replies. A reply can arrive without its terminating BEL, so a
+ * buffer like this is a reply. A burst of them concatenates into one buffer, hence the repetition.
+ *
+ * The pattern matches the whole buffer, because typing that arrives while a fragment is open is
+ * appended to it. So typing with any other character in it is flushed as input, and typing made only of
+ * reply characters is dropped with the fragment.
+ */
+const UNTERMINATED_OSC_COLOR_REPLY_PATTERN = /^(?:\x1b\](?:(?:1[01])|(?:4;\d{1,3}));[0-9a-fA-FrgbRGB#/;:]*)+$/;
 
 /**
  * Check if a string is a complete escape sequence or needs more data
@@ -387,6 +396,15 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		if (this.buffer.length > 0) {
 			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
 			this.timeout = setTimeout(() => {
+				this.timeout = null;
+
+				// Drop an unterminated color reply instead of emitting it as keyboard input.
+				if (UNTERMINATED_OSC_COLOR_REPLY_PATTERN.test(this.buffer)) {
+					this.buffer = "";
+					this.pendingKittyPrintableCodepoint = undefined;
+					return;
+				}
+
 				const flushed = this.flush();
 
 				for (const sequence of flushed) {

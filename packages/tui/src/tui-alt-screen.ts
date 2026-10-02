@@ -18,7 +18,7 @@ import {
 	type ScrollbarGeometry,
 } from "./layout.ts";
 import { getLayoutNode } from "./layout-node.ts";
-import type { Terminal } from "./terminal.ts";
+import { isBehindMultiplexer, type Terminal } from "./terminal.ts";
 import {
 	deleteAllKittyImages,
 	deleteAllKittyPlacements,
@@ -363,17 +363,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.clearComponentMouseGesture();
 		this.lastComponentClick = undefined;
 		this.resetRenderState();
-		const term = process.env.TERM?.toLowerCase() ?? "";
 		// Multiplexers can lag when every pointer movement is forwarded. Button-motion
 		// tracking preserves clicks, wheel events, selections, and scrollbar dragging.
-		const mouseSequence =
-			process.env.TMUX !== undefined ||
-			process.env.ZELLIJ !== undefined ||
-			process.env.STY !== undefined ||
-			term.startsWith("tmux") ||
-			term.startsWith("screen")
-				? ENABLE_BUTTON_MOTION_MOUSE
-				: ENABLE_ALL_MOTION_MOUSE;
+		const mouseSequence = isBehindMultiplexer() ? ENABLE_BUTTON_MOTION_MOUSE : ENABLE_ALL_MOTION_MOUSE;
 		this.terminal.write(
 			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
 		);

@@ -135,6 +135,35 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedSequences, ["\x1b[<35"]);
 		});
 
+		it("drops an unterminated OSC color reply instead of emitting it as input", async () => {
+			// A reply can arrive without its terminating BEL. Every character is one a reply is made
+			// of, so the fragment is a reply.
+			processInput("\x1b]11;rgb:1e1e/1e1e/1e1e");
+			processInput("\x1b]4;3;#808080");
+			assert.deepStrictEqual(emittedSequences, []);
+
+			await wait(15);
+
+			assert.deepStrictEqual(emittedSequences, []);
+		});
+
+		it("flushes a color reply fragment once input follows it", async () => {
+			// The value has to account for the whole buffer, so typing appended to a fragment is not
+			// dropped along with it: a lost keystroke is invisible, a stray fragment is not.
+			processInput("\x1b]4;3;#808080");
+			processInput("q");
+			await wait(15);
+
+			assert.deepStrictEqual(emittedSequences, ["\x1b]4;3;#808080q"]);
+		});
+
+		it("still flushes an unterminated OSC sequence that is not a color reply", async () => {
+			processInput("\x1b]0;pi");
+			await wait(15);
+
+			assert.deepStrictEqual(emittedSequences, ["\x1b]0;pi"]);
+		});
+
 		it("should flush a lone ESC as Escape when CR arrives after the timeout", async () => {
 			// Legacy-mode Alt+Enter is ESC + CR; when the terminal/transport splits
 			// the bytes further apart than the timeout, ESC is flushed alone and the

@@ -2,11 +2,32 @@ import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { setKittyProtocolActive } from "../src/keys.ts";
 import {
+	isBehindMultiplexer,
 	normalizeAppleTerminalInput,
 	normalizeNativeShiftEnterInput,
 	ProcessTerminal,
 	resolveEscapeTimeoutMs,
 } from "../src/terminal.ts";
+
+describe("isBehindMultiplexer", () => {
+	it("detects the variable each multiplexer sets", () => {
+		assert.equal(isBehindMultiplexer({ TMUX: "/tmp/tmux-501/default,123,0" }), true);
+		assert.equal(isBehindMultiplexer({ ZELLIJ: "0" }), true);
+		assert.equal(isBehindMultiplexer({ STY: "1234.pts-0.host" }), true);
+	});
+
+	it("detects the terminfo name a multiplexer leaves behind", () => {
+		// A nested or detached session can lose the variable and keep the TERM.
+		assert.equal(isBehindMultiplexer({ TERM: "tmux-256color" }), true);
+		assert.equal(isBehindMultiplexer({ TERM: "screen-256color" }), true);
+		assert.equal(isBehindMultiplexer({ TERM: "SCREEN" }), true);
+	});
+
+	it("reports a direct terminal", () => {
+		assert.equal(isBehindMultiplexer({ TERM: "xterm-256color" }), false);
+		assert.equal(isBehindMultiplexer({}), false);
+	});
+});
 
 describe("resolveEscapeTimeoutMs", () => {
 	it("uses PI_TUI_ESC_TIMEOUT when configured", () => {

@@ -39,6 +39,22 @@ export function isAppleTerminalSession(): boolean {
 }
 
 /**
+ * Whether a multiplexer sits between pi and the terminal. It answers some queries itself and relays
+ * the ones it does not handle, and a relayed reply can come back late, without its framing, or not at
+ * all. Read from the environment: there is no protocol for asking.
+ */
+export function isBehindMultiplexer(env: NodeJS.ProcessEnv = process.env): boolean {
+	const term = env.TERM?.toLowerCase() ?? "";
+	return (
+		env.TMUX !== undefined ||
+		env.ZELLIJ !== undefined ||
+		env.STY !== undefined ||
+		term.startsWith("tmux") ||
+		term.startsWith("screen")
+	);
+}
+
+/**
  * Refresh terminal dimensions on POSIX platforms by sending SIGWINCH to this process.
  * Best-effort: some environments (restricted seccomp or LSM policies) return EACCES
  * for `kill(2)`; in that case the dimensions refresh is skipped rather than crashing.

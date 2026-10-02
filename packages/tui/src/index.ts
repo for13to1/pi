@@ -114,7 +114,7 @@ export { oklabToOkhslLightness } from "./oklab.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
-export { isAppleTerminalSession, ProcessTerminal, type Terminal } from "./terminal.ts";
+export { isAppleTerminalSession, isBehindMultiplexer, ProcessTerminal, type Terminal } from "./terminal.ts";
 // Terminal colors
 export {
 	parseTerminalColorSchemeReport,

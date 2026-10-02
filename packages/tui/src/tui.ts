@@ -146,30 +146,69 @@ export type TuiInputListener = (data: string) => TuiInputListenerResult;
 type PendingTerminalColorQuery = {
 	foreground?: RgbColor;
 	background?: RgbColor;
-	palette: Array<RgbColor | undefined>;
-	/** Targets that already replied, so duplicates do not count twice. */
+	/** Palette colors, present only when the query asked for them. */
+	palette: Array<RgbColor | undefined> | undefined;
+	/** Number of replies that complete this query. */
+	replyCount: number;
+	/** Targets that already replied, so a duplicate reply is ignored. */
 	replied: Set<string>;
-	/**
-	 * Receives the result: the promise's resolve until the timeout, then `onLateReply`. Unset once the
-	 * query completed (on the DA1 reply or once every color replied); later replies are ignored.
-	 */
-	deliver: ((colors: TerminalColors) => void) | undefined;
+	/** Resolves the query's promise, once, when the query settles. */
+	resolve: (colors: TerminalColors) => void;
+	/** Receives the replies that arrive after the query settled, e.g. over slow links. */
+	onLateReply: ((colors: TerminalColors) => void) | undefined;
+	/** Whether the DA1 that ends this query's burst has arrived. */
+	da1: boolean;
+	/** Set once the promise resolved. A settled query stays in the queue and keeps collecting. */
+	settled: boolean;
 	timer: NodeJS.Timeout | undefined;
 };
 
-const TERMINAL_PALETTE_SIZE = 16;
-/** OSC 10 and 11 plus OSC 4 for every palette color. */
-const TERMINAL_COLOR_REPLY_COUNT = 2 + TERMINAL_PALETTE_SIZE;
 /**
- * Default colors, palette colors 0-15, and a trailing primary device attributes (DA1) request.
- * Every terminal answers DA1 and terminals answer in order, so the DA1 reply marks the end of
- * the color replies, including for terminals that ignore the color queries.
+ * Whether `query` is still waiting for the reply that `target` names. A palette reply to a query that
+ * did not ask for one is a reply rather than typing, but it is not a reply that query waits for.
  */
-const TERMINAL_COLOR_QUERY = `\x1b]10;?\x07\x1b]11;?\x07${Array.from(
+function terminalColorQueryNeeds(
+	query: PendingTerminalColorQuery,
+	target: "foreground" | "background" | number,
+): boolean {
+	if (query.replied.has(String(target))) {
+		return false;
+	}
+	return typeof target !== "number" || query.palette !== undefined;
+}
+
+const TERMINAL_PALETTE_SIZE = 16;
+/** OSC 10 and 11: the default foreground and background. */
+const TERMINAL_COLOR_REPLY_COUNT = 2;
+/**
+ * The default foreground and background colors. The theme needs the background for its contrast, so pi
+ * asks for these even behind a relay, and a terminal answers them itself: tmux answers these two and
+ * relays only OSC 4. A path that mangles even two replies is what `terminal.queryColors` turns off.
+ */
+const TERMINAL_COLOR_QUERY = "\x1b]10;?\x07\x1b]11;?\x07";
+/**
+ * The 16 ANSI palette colors. A terminal answers these itself too, but anything between pi and the
+ * terminal can only relay them, and a relay that answers late or without its framing leaves the bytes
+ * in the editor as typing: proven for tmux before 3.7, assumed for the legacy Windows console host.
+ * Callers ask for these only when the channel is direct, through the `palette` option of
+ * `queryTerminalColors()`.
+ */
+const TERMINAL_PALETTE_QUERY = Array.from(
 	{ length: TERMINAL_PALETTE_SIZE },
 	(_, index) => `\x1b]4;${index};?\x07`,
-).join("")}\x1b[c`;
+).join("");
+/**
+ * A trailing primary device attributes (DA1) request marks the end of the replies. Terminals answer it
+ * in order with the rest, including terminals that ignore the color queries; one that does not answer
+ * it at all is covered by the timeout.
+ */
+const TERMINAL_COLOR_QUERY_SENTINEL = "\x1b[c";
 const DEVICE_ATTRIBUTES_RESPONSE_PATTERN = /^\x1b\[\?[\d;]*c$/;
+/**
+ * How long pi keeps reading replies after the last one arrived: a terminal can answer slowly, and one
+ * that answers DA1 before its colors ends the query while they are still on their way.
+ */
+const TERMINAL_REPLY_GRACE_MS = 250;
 
 /**
  * Interface for components that can receive focus and display a hardware cursor.
@@ -478,6 +517,8 @@ export interface TUI extends Component {
 	queryTerminalColors(options: {
 		timeoutMs: number;
 		onLateReply?: (colors: TerminalColors) => void;
+		/** Also ask for the 16 ANSI palette colors. Off by default; see `TERMINAL_PALETTE_QUERY`. */
+		palette?: boolean;
 	}): Promise<TerminalColors>;
 }
 
@@ -510,10 +551,16 @@ export abstract class TuiBase extends Container implements TUI {
 	protected fullRedrawCount = 0;
 	protected stopped = false;
 	/**
-	 * Color queries waiting for their DA1 reply, oldest first. Terminals answer in order, so color
-	 * replies belong to the oldest one. Queries stay here after a timeout to collect late replies.
+	 * Color queries still collecting replies, oldest first. Terminals answer in order, so the replies
+	 * that follow a query belong to the oldest query still waiting.
 	 */
 	private pendingTerminalColorQueries: PendingTerminalColorQuery[] = [];
+	/**
+	 * When the reply window closes: until then, input that belongs to a reply is consumed instead of
+	 * reaching the editor. It closes one grace period after the last reply, or after the query's
+	 * timeout when nothing answered; 0 means closed.
+	 */
+	private terminalReplyDeadline = 0;
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
 	private terminalColorSchemeNotificationsEnabled = false;
 	/** Directory for debug/crash logs. When undefined, debug logging is disabled and crash dumps fall back to the OS temp directory. */
@@ -969,6 +1016,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 	stop(options: TuiStopOptions = {}): void {
 		this.stopped = true;
+		this.terminalReplyDeadline = 0;
 		this.cancelRenderTimer();
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031l");
@@ -1120,13 +1168,21 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private consumeTerminalColorResponse(data: string): boolean {
-		const query = this.pendingTerminalColorQueries[0];
-		if (!query) {
+		// The window is a timestamp compare, so ordinary input leaves before anything is parsed: this
+		// runs for every keystroke in the application. Once it closes, a color reply is input again.
+		if (!this.terminalReplyWindowOpen) {
 			return false;
 		}
 		if (DEVICE_ATTRIBUTES_RESPONSE_PATTERN.test(data)) {
-			this.pendingTerminalColorQueries.shift();
-			this.completeTerminalColorQuery(query);
+			this.extendTerminalReplyWindow(TERMINAL_REPLY_GRACE_MS);
+			// DA1 ends the burst of the oldest query that has not had one. On a terminal that answers DA1
+			// before its colors, that query keeps collecting them unless a new query takes them over.
+			const query = this.pendingTerminalColorQueries.find((pending) => !pending.da1);
+			if (query) {
+				query.da1 = true;
+				this.settleTerminalColorQuery(query);
+				this.dropTerminalColorQueryIfComplete(query);
+			}
 			return true;
 		}
 
@@ -1134,35 +1190,102 @@ export abstract class TuiBase extends Container implements TUI {
 		if (!response) {
 			return false;
 		}
-		const { target, rgb } = response;
-		const key = String(target);
-		if (!query.deliver || query.replied.has(key)) {
+		this.extendTerminalReplyWindow(TERMINAL_REPLY_GRACE_MS);
+		// While the window is open, a reply is a reply: it belongs to the oldest query still waiting for
+		// that reply — never to the editor, and never to a query that already has it.
+		const query = this.pendingTerminalColorQueries.find((pending) =>
+			terminalColorQueryNeeds(pending, response.target),
+		);
+		if (!query) {
 			return true;
 		}
-		query.replied.add(key);
+		const { target, rgb } = response;
+		query.replied.add(String(target));
 		if (target === "foreground") {
 			query.foreground = rgb;
 		} else if (target === "background") {
 			query.background = rgb;
-		} else if (target < TERMINAL_PALETTE_SIZE) {
+		} else if (target < TERMINAL_PALETTE_SIZE && query.palette !== undefined) {
 			query.palette[target] = rgb;
 		}
-		if (query.replied.size === TERMINAL_COLOR_REPLY_COUNT) {
-			this.completeTerminalColorQuery(query);
+		const wasSettled = query.settled;
+		if (query.replied.size === query.replyCount) {
+			this.settleTerminalColorQuery(query);
+			this.dropTerminalColorQueryIfComplete(query);
+		}
+		if (wasSettled) {
+			// The promise already resolved, so this reply is one the caller is still waiting for.
+			query.onLateReply?.(this.terminalColorQueryResult(query));
 		}
 		return true;
 	}
 
+	private get terminalReplyWindowOpen(): boolean {
+		// A monotonic clock, like the render path uses: a wall-clock adjustment must not open or close
+		// the window by surprise.
+		return this.terminalReplyDeadline > performance.now();
+	}
+
+	/**
+	 * Keep the window open until this long from now: a burst still arriving stays covered, and it stays
+	 * bounded. A new query never closes a window that is still open for an older one.
+	 */
+	private extendTerminalReplyWindow(durationMs: number): void {
+		this.terminalReplyDeadline = Math.max(this.terminalReplyDeadline, performance.now() + durationMs);
+	}
+
 	private terminalColorQueryResult(query: PendingTerminalColorQuery): TerminalColors {
-		const palette = query.palette.every((color) => color !== undefined) ? (query.palette as RgbColor[]) : undefined;
+		const palette = query.palette?.every((color) => color !== undefined) ? (query.palette as RgbColor[]) : undefined;
 		return { foreground: query.foreground, background: query.background, palette };
 	}
 
-	private completeTerminalColorQuery(query: PendingTerminalColorQuery): void {
-		const deliver = query.deliver;
-		query.deliver = undefined;
+	/**
+	 * Give `query` what `previous` already learned, for the replies both wait for: two queries ask the
+	 * same question, so an answer the older one collected answers the newer one too.
+	 */
+	private adoptTerminalColors(query: PendingTerminalColorQuery, previous: PendingTerminalColorQuery): void {
+		if (previous.foreground && terminalColorQueryNeeds(query, "foreground")) {
+			query.foreground = previous.foreground;
+			query.replied.add("foreground");
+		}
+		if (previous.background && terminalColorQueryNeeds(query, "background")) {
+			query.background = previous.background;
+			query.replied.add("background");
+		}
+		if (query.palette === undefined || previous.palette === undefined) {
+			return;
+		}
+		for (let index = 0; index < TERMINAL_PALETTE_SIZE; index += 1) {
+			const color = previous.palette[index];
+			if (color && terminalColorQueryNeeds(query, index)) {
+				query.palette[index] = color;
+				query.replied.add(String(index));
+			}
+		}
+	}
+
+	/** Take a query out of the queue once its whole burst has been read: every reply, and its DA1. */
+	private dropTerminalColorQueryIfComplete(query: PendingTerminalColorQuery): void {
+		if (!query.da1 || query.replied.size !== query.replyCount) {
+			return;
+		}
+		const index = this.pendingTerminalColorQueries.indexOf(query);
+		if (index !== -1) {
+			this.pendingTerminalColorQueries.splice(index, 1);
+		}
+	}
+
+	/**
+	 * Resolve one query with the replies collected so far. It stays in the queue and keeps collecting
+	 * for `onLateReply`: settling a promise says nothing about whether the terminal is done sending.
+	 */
+	private settleTerminalColorQuery(query: PendingTerminalColorQuery | undefined): void {
+		if (!query || query.settled) {
+			return;
+		}
+		query.settled = true;
 		clearTimeout(query.timer);
-		deliver?.(this.terminalColorQueryResult(query));
+		query.resolve(this.terminalColorQueryResult(query));
 	}
 
 	private consumeTerminalColorSchemeReport(data: string): boolean {
@@ -1460,34 +1583,64 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/**
-	 * Query the terminal's theme colors: the default foreground (OSC 10), the default background
-	 * (OSC 11), and ANSI colors 0-15 (OSC 4), followed by a DA1 request that marks the end of the
-	 * replies. Resolves when the DA1 reply or all color replies arrive, or when the timeout expires.
-	 * Colors the terminal did not report are undefined; the palette is only set when all 16 arrived.
+	 * Query the terminal's theme colors: the default foreground (OSC 10) and background (OSC 11),
+	 * the 16 ANSI colors (OSC 4) when `palette` is set, and a trailing DA1 request that marks the end
+	 * of the replies. Resolves when every expected reply arrived, when the DA1 reply arrives, or when
+	 * the timeout expires. Colors the terminal did not report are undefined; the palette is only set
+	 * when all 16 arrived.
+	 *
+	 * More than one query can be outstanding. A reply names no query, so pi assigns them in the order
+	 * they were asked and assumes the terminal answers in that order: the replies belong to the oldest
+	 * query still waiting. A later query can therefore time out before an earlier one and resolve with
+	 * whatever arrived; the replies that were still its own arrive through `onLateReply`.
 	 * @param timeoutMs Query timeout in milliseconds, for terminals that do not answer DA1 either.
-	 * @param onLateReply Receives the replies if the query completes after the timeout, e.g. over slow links.
+	 * @param onLateReply Receives the replies that arrive after the query settled, e.g. over slow links.
+	 * @param palette Ask for the 16 ANSI palette colors as well. Only pass this when the channel is
+	 * direct, because anything in between can only relay the replies.
 	 */
 	queryTerminalColors({
 		timeoutMs,
 		onLateReply,
+		palette = false,
 	}: {
 		timeoutMs: number;
 		onLateReply?: (colors: TerminalColors) => void;
+		palette?: boolean;
 	}): Promise<TerminalColors> {
 		return new Promise((resolve) => {
 			const query: PendingTerminalColorQuery = {
-				palette: Array.from({ length: TERMINAL_PALETTE_SIZE }, () => undefined),
+				palette: palette ? Array.from({ length: TERMINAL_PALETTE_SIZE }, () => undefined) : undefined,
+				replyCount: palette ? TERMINAL_COLOR_REPLY_COUNT + TERMINAL_PALETTE_SIZE : TERMINAL_COLOR_REPLY_COUNT,
 				replied: new Set(),
-				deliver: resolve,
+				da1: false,
+				resolve,
+				onLateReply,
+				settled: false,
 				timer: undefined,
 			};
-			// Resolve with the replies so far, and keep collecting late replies for `onLateReply`.
-			query.timer = setTimeout(() => {
-				query.deliver = onLateReply;
-				resolve(this.terminalColorQueryResult(query));
-			}, timeoutMs);
+			// Resolve this query when its own timeout expires. Settling the oldest instead would resolve
+			// the wrong promise and leave this one with no timer left to resolve it.
+			query.timer = setTimeout(() => this.settleTerminalColorQuery(query), timeoutMs);
+			// The replies that follow are this query's. It takes over from the queries that are done with
+			// them: those whose DA1 arrived, and those that settled without collecting every reply they
+			// expected (a superseded query loses the replies still on their way to it). One that has all
+			// of them is still waiting for the DA1 that ends its burst, so it stays. Ownership follows
+			// that state, not the reply window.
+			const stillCollecting = (pending: PendingTerminalColorQuery): boolean =>
+				!pending.da1 && !(pending.settled && pending.replied.size !== pending.replyCount);
+			for (const superseded of this.pendingTerminalColorQueries) {
+				if (!stillCollecting(superseded)) {
+					this.adoptTerminalColors(query, superseded);
+				}
+			}
+			this.pendingTerminalColorQueries = this.pendingTerminalColorQueries.filter(stillCollecting);
 			this.pendingTerminalColorQueries.push(query);
-			this.terminal.write(TERMINAL_COLOR_QUERY);
+			// Replies may arrive after the query ends, so keep reading them for a bounded grace period
+			// instead of typing them into the editor.
+			this.extendTerminalReplyWindow(timeoutMs + TERMINAL_REPLY_GRACE_MS);
+			this.terminal.write(
+				`${TERMINAL_COLOR_QUERY}${palette ? TERMINAL_PALETTE_QUERY : ""}${TERMINAL_COLOR_QUERY_SENTINEL}`,
+			);
 		});
 	}
 }
