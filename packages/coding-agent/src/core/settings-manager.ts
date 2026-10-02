@@ -62,6 +62,10 @@ export interface TerminalSettings {
 	hyperlinks?: boolean | "auto";
 	images?: "kitty" | "iterm2" | "auto" | false;
 	trueColor?: boolean | "auto";
+	/** Ask the terminal for its colors at all. Default: true. */
+	queryColors?: boolean;
+	/** Ask the terminal for its 16 ANSI palette colors. Default: only when nothing sits between pi and the terminal. */
+	queryPalette?: boolean;
 }
 
 export interface ImageSettings {
@@ -1283,6 +1287,17 @@ export class SettingsManager {
 			...(typeof terminal?.trueColor === "boolean" ? { trueColor: terminal.trueColor } : {}),
 			...(typeof terminal?.hyperlinks === "boolean" ? { hyperlinks: terminal.hyperlinks } : {}),
 		};
+	}
+
+	/** On unless the user turned the query off: `terminal.queryColors: false` asks for nothing at all. */
+	getTerminalQueryColors(): boolean {
+		return this.settings.terminal?.queryColors ?? true;
+	}
+
+	/** Undefined when the setting is unset, which leaves the decision to the caller. */
+	getTerminalQueryPalette(): boolean | undefined {
+		const value = this.settings.terminal?.queryPalette;
+		return typeof value === "boolean" ? value : undefined;
 	}
 
 	getShowImages(): boolean {

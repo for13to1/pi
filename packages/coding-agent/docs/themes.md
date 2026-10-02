@@ -2,11 +2,13 @@
 
 Themes control the colors Pi uses in interactive mode and HTML exports. Pi includes the `system`, `dark`, and `light` themes. You can select one theme, follow your terminal's light or dark appearance, or create your own palette.
 
+<a id="use-your-terminals-colors"></a>
+
 ## Use your terminal's colors
 
 The `system` theme is the default. It builds Pi's colors from your terminal's theme, so Pi matches the terminal instead of bringing its own palette:
 
-- Pi queries the terminal's default foreground and background colors and its 16 ANSI colors.
+- Pi queries the terminal's default foreground and background colors, and its 16 ANSI colors when it can ask for them directly.
 - Each Pi color takes its hue from one ANSI color, for example errors from red and links from blue.
 - Pi sets each color's lightness so that it stands out from the background by a minimum contrast. Body text keeps at least a 4.5:1 WCAG contrast ratio on the background and every panel.
 - When the terminal switches between light and dark, Pi queries the colors again and rebuilds the theme.
@@ -18,6 +20,10 @@ The theme adapts to what the terminal reports:
 | Background and ANSI colors | Colors from the terminal palette, placed for the actual background. |
 | Background only | Pi's own hues, placed for the actual background. |
 | Nothing | ANSI color indices and the terminal's default colors, which the terminal renders itself. Secondary text is faint, and panels have no background color. |
+
+Pi asks for the ANSI colors only when it talks to the terminal itself. Anything in between — a multiplexer such as tmux, or the legacy Windows console host — can only relay that query, and a relay that returns the reply late or without its framing leaves the bytes in the editor as typing. There Pi asks for the default colors only: that gives the second row of the table above when the terminal reports a background, and the third when it does not. Set [`terminal.queryPalette`](settings.md#terminal-and-display) to ask anyway.
+
+Set [`terminal.queryColors`](settings.md#terminal-and-display) to `false` to ask for nothing at all. That is the escape hatch for a channel that garbles even the two default-color replies: Pi stops querying and stays on the third row of the table above.
 
 Pi asks the terminal for its colors when it starts. Terminals usually answer within a few milliseconds, and Pi waits at most 100 ms before showing the startup header. If the terminal does not answer in time, Pi uses the ANSI color fallback, and it still applies the colors if they arrive later, for example over a slow SSH connection. `system` is a reserved name: a custom theme with that name is ignored.
 

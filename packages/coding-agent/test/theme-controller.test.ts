@@ -8,12 +8,15 @@ import {
 	type TerminalTheme,
 	theme,
 } from "../src/modes/interactive/theme/theme.ts";
-import { InteractiveThemeController } from "../src/modes/interactive/theme/theme-controller.ts";
+import {
+	InteractiveThemeController,
+	shouldQueryTerminalPalette,
+} from "../src/modes/interactive/theme/theme-controller.ts";
 
 const DARK: TerminalColors = { foreground: { r: 248, g: 248, b: 242 }, background: { r: 40, g: 42, b: 54 } };
 const LIGHT: TerminalColors = { foreground: { r: 30, g: 30, b: 30 }, background: { r: 250, g: 250, b: 250 } };
 
-type ColorQueryOptions = { timeoutMs: number; onLateReply?: (colors: TerminalColors) => void };
+type ColorQueryOptions = { timeoutMs: number; onLateReply?: (colors: TerminalColors) => void; palette?: boolean };
 
 function createUi() {
 	const queryTerminalColors = vi.fn(async (_options: ColorQueryOptions): Promise<TerminalColors> => ({}));
@@ -57,6 +60,29 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
+describe("shouldQueryTerminalPalette", () => {
+	const direct = { behindMultiplexer: false, platform: "darwin" as NodeJS.Platform, windowsTerminal: false };
+	const multiplexer = { behindMultiplexer: true, platform: "linux" as NodeJS.Platform, windowsTerminal: false };
+	const windowsTerminal = { behindMultiplexer: false, platform: "win32" as NodeJS.Platform, windowsTerminal: true };
+	const legacyConsole = { behindMultiplexer: false, platform: "win32" as NodeJS.Platform, windowsTerminal: false };
+
+	it("asks when pi talks to the terminal directly", () => {
+		expect(shouldQueryTerminalPalette(undefined, direct)).toBe(true);
+		expect(shouldQueryTerminalPalette(undefined, windowsTerminal)).toBe(true);
+	});
+
+	it("does not ask through a relay", () => {
+		expect(shouldQueryTerminalPalette(undefined, multiplexer)).toBe(false);
+		// The legacy console host is always in the path on Windows. Windows Terminal is not.
+		expect(shouldQueryTerminalPalette(undefined, legacyConsole)).toBe(false);
+	});
+
+	it("lets the setting override the channel", () => {
+		expect(shouldQueryTerminalPalette(true, multiplexer)).toBe(true);
+		expect(shouldQueryTerminalPalette(false, direct)).toBe(false);
+	});
+});
+
 describe("InteractiveThemeController", () => {
 	it("uses the initial theme without persisting it", async () => {
 		const { ui, queryTerminalColors } = createUi();
@@ -73,6 +99,17 @@ describe("InteractiveThemeController", () => {
 		expect(queryTerminalColors).toHaveBeenCalledOnce();
 		expect(setTheme).not.toHaveBeenCalled();
 		expect(flushSettings).not.toHaveBeenCalled();
+	});
+
+	it("asks for nothing when terminal.queryColors is false", async () => {
+		const { ui, queryTerminalColors } = createUi();
+		const controller = createController(ui, () => SettingsManager.inMemory({ terminal: { queryColors: false } }));
+		controller.applyFromSettings();
+		await flush();
+
+		expect(queryTerminalColors).not.toHaveBeenCalled();
+		// The pending state still clears, so the theme falls back to indices instead of staying grayscale.
+		expect(theme.getFgAnsi("error")).toBe("\x1b[38;5;1m");
 	});
 
 	it("applies the theme immediately and lets startup wait for the colors", async () => {

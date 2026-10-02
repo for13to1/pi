@@ -1,4 +1,4 @@
-import type { RgbColor, TerminalColors, TUI } from "@earendil-works/pi-tui";
+import { isBehindMultiplexer, type RgbColor, type TerminalColors, type TUI } from "@earendil-works/pi-tui";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import {
 	getTerminalTheme,
@@ -25,18 +25,76 @@ type ThemeResult = { success: boolean; error?: string };
 const TERMINAL_QUERY_TIMEOUT_MS = 100;
 
 /**
- * Query the terminal's colors and pass them to `apply` when the query completes or times out, and again
- * if the terminal answers after the timeout. A failed query applies no colors. Settles after the first apply.
+ * Whether pi may also ask the terminal for its 16 ANSI palette colors.
+ *
+ * Asking only for the default colors gives up the hues the palette would have provided, and with them
+ * the palette tier: `docs/themes.md` documents what the theme falls back to. `terminal.queryPalette`
+ * overrides this; see `TERMINAL_PALETTE_QUERY` for why this query cannot go through a relay.
  */
-export function requestTerminalColors(ui: TUI, apply: (colors: TerminalColors) => void): Promise<void> {
-	let query: Promise<TerminalColors>;
+export function shouldQueryTerminalPalette(
+	configured: boolean | undefined,
+	environment: { behindMultiplexer: boolean; platform: NodeJS.Platform; windowsTerminal: boolean },
+): boolean {
+	if (configured !== undefined) {
+		return configured;
+	}
+	// A multiplexer relays the palette query instead of answering it, and the legacy Windows console host
+	// is in the path the same way. Anything on Windows that is not Windows Terminal is treated as one of
+	// those, which also catches terminals that would have answered correctly.
+	if (environment.behindMultiplexer) {
+		return false;
+	}
+	return environment.platform !== "win32" || environment.windowsTerminal;
+}
+
+/** What the next query asks the terminal for. */
+export interface TerminalColorQuery {
+	/** Whether to query at all: `terminal.queryColors`. */
+	enabled: boolean;
+	/** Whether to ask for the 16 ANSI palette colors as well: `terminal.queryPalette`. */
+	palette: boolean;
+}
+
+/** `shouldQueryTerminalPalette()` for a settings manager and this process's environment. */
+export function resolveTerminalColorQuery(settingsManager: SettingsManager): TerminalColorQuery {
+	return {
+		enabled: settingsManager.getTerminalQueryColors(),
+		palette: shouldQueryTerminalPalette(settingsManager.getTerminalQueryPalette(), {
+			behindMultiplexer: isBehindMultiplexer(),
+			platform: process.platform,
+			windowsTerminal: process.env.WT_SESSION !== undefined,
+		}),
+	};
+}
+
+/**
+ * Query the terminal's colors and pass them to `apply` when the query completes or times out, and again
+ * if the terminal answers after the query settled. A failed query applies no colors. Settles after the
+ * first apply. Asks for nothing at all when `query.enabled` is false.
+ */
+export function requestTerminalColors(
+	ui: TUI,
+	apply: (colors: TerminalColors) => void,
+	query: TerminalColorQuery,
+): Promise<void> {
+	if (!query.enabled) {
+		// `terminal.queryColors: false`. Applying no colors still clears the pending state, so the system
+		// theme falls back to ANSI color indices instead of staying grayscale forever.
+		apply({});
+		return Promise.resolve();
+	}
+	let pending: Promise<TerminalColors>;
 	try {
-		query = ui.queryTerminalColors({ timeoutMs: TERMINAL_QUERY_TIMEOUT_MS, onLateReply: apply });
+		pending = ui.queryTerminalColors({
+			timeoutMs: TERMINAL_QUERY_TIMEOUT_MS,
+			onLateReply: apply,
+			palette: query.palette,
+		});
 	} catch {
 		// Treat a failed query like a terminal that does not report colors.
-		query = Promise.resolve({});
+		pending = Promise.resolve({});
 	}
-	return query.then(apply, () => apply({}));
+	return pending.then(apply, () => apply({}));
 }
 
 function sameRgb(a: RgbColor | undefined, b: RgbColor | undefined): boolean {
@@ -187,7 +245,11 @@ export class InteractiveThemeController {
 
 	/** Query the terminal's colors without waiting for them; `waitForTerminalColors()` waits for this query. */
 	private queryTerminalColors(): void {
-		this.terminalColorQuery = requestTerminalColors(this.ui, (colors) => this.applyTerminalColors(colors));
+		this.terminalColorQuery = requestTerminalColors(
+			this.ui,
+			(colors) => this.applyTerminalColors(colors),
+			resolveTerminalColorQuery(this.getSettingsManager()),
+		);
 	}
 
 	/**
