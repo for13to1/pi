@@ -101,6 +101,18 @@ const TerminalSettingsSchema = Type.Object({
 		Type.Union([Type.Literal("kitty"), Type.Literal("iterm2"), Type.Literal("auto"), Type.Literal(false)]),
 	),
 	trueColor: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto")])),
+	queryColors: Type.Optional(
+		Type.Boolean({
+			description: "Ask the terminal for its colors at all.",
+			default: SETTINGS_DEFAULTS.terminal.queryColors,
+		}),
+	),
+	queryPalette: Type.Optional(
+		Type.Boolean({
+			description:
+				"Ask the terminal for its 16 ANSI palette colors. Default: except on tmux 3.6.x, which relays the query, and when the tmux version cannot be read.",
+		}),
+	),
 });
 
 const ImageSettingsSchema = Type.Object({

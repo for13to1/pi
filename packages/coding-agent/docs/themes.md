@@ -2,11 +2,13 @@
 
 Themes control the colors Pi uses in interactive mode and HTML exports. Pi includes the `system`, `dark`, and `light` themes. You can select one theme, follow your terminal's light or dark appearance, or create your own palette.
 
+<a id="use-your-terminals-colors"></a>
+
 ## Use your terminal's colors
 
 The `system` theme is the default. It builds Pi's colors from your terminal's theme, so Pi matches the terminal instead of bringing its own palette:
 
-- Pi queries the terminal's default foreground and background colors and its 16 ANSI colors.
+- Pi queries the terminal's default foreground and background colors, and its 16 ANSI colors.
 - Each Pi color takes its hue from one ANSI color, for example errors from red and links from blue.
 - Pi sets each color's lightness so that it stands out from the background by a minimum contrast. Body text keeps at least a 4.5:1 WCAG contrast ratio on the background and every panel.
 - When the terminal switches between light and dark, Pi queries the colors again and rebuilds the theme.
@@ -18,6 +20,10 @@ The theme adapts to what the terminal reports:
 | Background and ANSI colors | Colors from the terminal palette, placed for the actual background. |
 | Background only | Pi's own hues, placed for the actual background. |
 | Nothing | ANSI color indices and the terminal's default colors, which the terminal renders itself. Secondary text is faint, and panels have no background color. |
+
+Pi queries the ANSI colors everywhere except tmux 3.6.x: those versions relay the palette query to the outer terminal, and a relayed reply that arrives split can reach the editor as typing. On those versions Pi asks for the default colors only: that gives the second row of the table above when the terminal reports a background, and the third when it does not. tmux 3.7 still forwards the query but no longer lets a relayed reply reach the editor as typing. tmux 3.4 and 3.5 never forwarded it, and Pi keeps the palette on all three. A tmux whose version Pi cannot read skips the palette too: the relay only exists inside tmux, and an unknown version has to fail safe. Set [`terminal.queryPalette`](settings.md#terminal-and-display) to override the version check in either direction.
+
+Set [`terminal.queryColors`](settings.md#terminal-and-display) to `false` to ask for nothing at all. That is the escape hatch for a channel that garbles even the two default-color replies: Pi stops querying and stays on the third row of the table above.
 
 Pi asks the terminal for its colors when it starts. Terminals usually answer within a few milliseconds, and Pi waits at most 100 ms before showing the startup header. If the terminal does not answer in time, Pi uses the ANSI color fallback, and it still applies the colors if they arrive later, for example over a slow SSH connection. `system` is a reserved name: a custom theme with that name is ignored.
 

@@ -29,7 +29,11 @@ import {
 	setTheme,
 	type Theme,
 } from "../modes/interactive/theme/theme.ts";
-import { requestTerminalColors } from "../modes/interactive/theme/theme-controller.ts";
+import {
+	requestTerminalColors,
+	resolveTerminalColorQuery,
+	type TerminalColorQuery,
+} from "../modes/interactive/theme/theme-controller.ts";
 
 const OFFICIAL_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const OFFICIAL_APP_NAME = "pi";
@@ -97,22 +101,31 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
 export function startStartupTui(ui: TUI, settingsManager: SettingsManager): void {
 	ui.start();
 	const themeSetting = settingsManager.getThemeSetting();
-	queryStartupTerminalColors(ui, () => {
-		setTheme(resolveThemeSetting(themeSetting, getTerminalTheme()) ?? SYSTEM_THEME_NAME);
-	});
+	queryStartupTerminalColors(
+		ui,
+		() => {
+			setTheme(resolveThemeSetting(themeSetting, getTerminalTheme()) ?? SYSTEM_THEME_NAME);
+		},
+		resolveTerminalColorQuery(settingsManager),
+	);
 }
 
 /**
- * Query the terminal's colors without waiting for them. When they arrive, including after the timeout,
- * record them for the system theme and "" (terminal default) tokens, run `onColors`, and re-render.
+ * Query the terminal's colors without waiting for them. When they arrive, including after the query
+ * settled, record them for the system theme and "" (terminal default) tokens, run `onColors`, and
+ * re-render.
  */
-function queryStartupTerminalColors(ui: TUI, onColors: () => void): void {
-	void requestTerminalColors(ui, (colors) => {
-		setTerminalColors(colors);
-		onColors();
-		ui.invalidate();
-		ui.requestRender();
-	});
+function queryStartupTerminalColors(ui: TUI, onColors: () => void, query: TerminalColorQuery): void {
+	void requestTerminalColors(
+		ui,
+		(colors) => {
+			setTerminalColors(colors);
+			onColors();
+			ui.invalidate();
+			ui.requestRender();
+		},
+		query,
+	);
 }
 
 async function clearStartupTui(ui: TUI): Promise<void> {
@@ -214,7 +227,7 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 		ui.setFocus(component);
 		ui.requestRender();
 		// The terminal's colors regenerate the system theme; re-rendering rebuilds the dialog with it.
-		queryStartupTerminalColors(ui, () => setTheme(previewTheme));
+		queryStartupTerminalColors(ui, () => setTheme(previewTheme), resolveTerminalColorQuery(settingsManager));
 	});
 }
 

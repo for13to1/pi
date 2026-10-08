@@ -107,6 +107,8 @@ See [Compaction Reference](compaction.md) for trigger, summarization, and valida
 | `terminal.hyperlinks` | `boolean \| "auto"` | `"auto"` | Override OSC 8 hyperlink detection. |
 | `terminal.images` | `"kitty" \| "iterm2" \| "auto" \| false` | `"auto"` | Override inline-image protocol detection. |
 | `terminal.trueColor` | `boolean \| "auto"` | `"auto"` | Override true-color detection. |
+| `terminal.queryColors` | boolean | `true` | Ask the terminal for its colors at all. Set to `false` on a channel that garbles the replies: Pi stops querying for theme colors and the `system` theme uses ANSI color indices. See [Use your terminal's colors](themes.md#use-your-terminals-colors). |
+| `terminal.queryPalette` | boolean | unset | Ask the terminal for its 16 ANSI colors for the `system` theme. Unset asks except on tmux 3.6.x, which relays that query and may leave the reply in the editor, and when its version cannot be read. See [Use your terminal's colors](themes.md#use-your-terminals-colors). |
 | `images.autoResize` | boolean | `true` | Resize images to at most 2000 by 2000 pixels before sending them to a model. |
 | `images.blockImages` | boolean | `false` | Prevent images from being sent to models. |
 | `markdown.codeBlockIndent` | string | `"  "` | Prefix used to indent rendered code blocks. |

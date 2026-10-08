@@ -431,6 +431,15 @@
               "const": "auto"
             }
           ]
+        },
+        "queryColors": {
+          "type": "boolean",
+          "description": "Ask the terminal for its colors at all.",
+          "default": true
+        },
+        "queryPalette": {
+          "type": "boolean",
+          "description": "Ask the terminal for its 16 ANSI palette colors. Default: except on tmux 3.6.x, which relays the query, and when the tmux version cannot be read."
         }
       }
     },

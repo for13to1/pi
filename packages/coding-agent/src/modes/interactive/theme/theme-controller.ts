@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { RgbColor, TerminalColors, TUI } from "@earendil-works/pi-tui";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import {
@@ -25,18 +26,102 @@ type ThemeResult = { success: boolean; error?: string };
 const TERMINAL_QUERY_TIMEOUT_MS = 100;
 
 /**
- * Query the terminal's colors and pass them to `apply` when the query completes or times out, and again
- * if the terminal answers after the timeout. A failed query applies no colors. Settles after the first apply.
+ * What the tmux probe found. `outside` means no tmux sits on this path, so nothing can relay the palette query;
+ * `unreadable` means tmux is there but its version could not be read.
  */
-export function requestTerminalColors(ui: TUI, apply: (colors: TerminalColors) => void): Promise<void> {
-	let query: Promise<TerminalColors>;
-	try {
-		query = ui.queryTerminalColors({ timeoutMs: TERMINAL_QUERY_TIMEOUT_MS, onLateReply: apply });
-	} catch {
-		// Treat a failed query like a terminal that does not report colors.
-		query = Promise.resolve({});
+export type TmuxProbe = { kind: "outside" } | { kind: "unreadable" } | { kind: "version"; version: string };
+
+/**
+ * Whether pi asks for the terminal's 16 ANSI palette colors. Skipped on tmux 3.6.x, which relays an OSC 4 palette
+ * query to the outer terminal and can misread a split relayed reply as typing in the editor. tmux issue 4665 added
+ * that relay in 3.6; tmux issues 4749 and 4793 are the reports behind the two fixes in 3.7. The relay does not
+ * exist before 3.6, so 3.4 and 3.5 keep the palette, and a version tmux reported but we cannot parse is left alone
+ * too.
+ *
+ * An unreadable version inside tmux fails safe. The relay only exists on that path, what leaks is the reported
+ * bug, and dropping the palette costs colors only. Outside tmux there is nothing to relay.
+ */
+export function shouldQueryTerminalPalette(probe: TmuxProbe): boolean {
+	if (probe.kind === "outside") {
+		return true;
 	}
-	return query.then(apply, () => apply({}));
+	if (probe.kind === "unreadable") {
+		return false;
+	}
+	const match = probe.version.match(/^(\d+)\.(\d+)/);
+	return match == null || !(Number(match[1]) === 3 && Number(match[2]) === 6);
+}
+
+let tmuxProbeCache: TmuxProbe | undefined;
+
+/** Whether tmux is on this path, with its server version when tmux answers. Probed once. Synchronous, blocks at most 250 ms. */
+function probeTmux(): TmuxProbe {
+	if (tmuxProbeCache) {
+		return tmuxProbeCache;
+	}
+	let probe: TmuxProbe = { kind: "outside" };
+	if (process.env.TMUX !== undefined) {
+		try {
+			const version = execFileSync("tmux", ["display-message", "-p", "#{version}"], {
+				encoding: "utf8",
+				timeout: 250,
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+			probe = version === "" ? { kind: "unreadable" } : { kind: "version", version };
+		} catch {
+			// tmux is on this path but did not answer, so its version stays unknown.
+			probe = { kind: "unreadable" };
+		}
+	}
+	tmuxProbeCache = probe;
+	return probe;
+}
+
+/** What the next color query asks for. */
+export interface TerminalColorQuery {
+	/** Whether to query at all: `terminal.queryColors`. */
+	enabled: boolean;
+	/** Whether to include the 16 ANSI palette colors: `terminal.queryPalette`. */
+	palette: boolean;
+}
+
+/**
+ * Resolve the query for a settings manager and this process. `terminal.queryPalette` overrides the probe, and a
+ * configured value needs no probe, so the subprocess only runs when the decision is ours. `probe` is for tests.
+ */
+export function resolveTerminalColorQuery(settingsManager: SettingsManager, probe?: TmuxProbe): TerminalColorQuery {
+	const configured = settingsManager.getTerminalQueryPalette();
+	return {
+		enabled: settingsManager.getTerminalQueryColors(),
+		palette: configured ?? shouldQueryTerminalPalette(probe ?? probeTmux()),
+	};
+}
+
+/**
+ * Query the terminal's colors and pass them to `apply`, once the query settles and again for replies that
+ * arrive after it. A failed query applies no colors. Asks for nothing when `query.enabled` is false.
+ */
+export function requestTerminalColors(
+	ui: TUI,
+	apply: (colors: TerminalColors) => void,
+	query: TerminalColorQuery,
+): Promise<void> {
+	if (!query.enabled) {
+		// Clears the pending state too, so the theme falls back to indices instead of staying grayscale.
+		apply({});
+		return Promise.resolve();
+	}
+	let pending: Promise<TerminalColors>;
+	try {
+		pending = ui.queryTerminalColors({
+			timeoutMs: TERMINAL_QUERY_TIMEOUT_MS,
+			onLateReply: apply,
+			palette: query.palette,
+		});
+	} catch {
+		pending = Promise.resolve({});
+	}
+	return pending.then(apply, () => apply({}));
 }
 
 function sameRgb(a: RgbColor | undefined, b: RgbColor | undefined): boolean {
@@ -187,7 +272,11 @@ export class InteractiveThemeController {
 
 	/** Query the terminal's colors without waiting for them; `waitForTerminalColors()` waits for this query. */
 	private queryTerminalColors(): void {
-		this.terminalColorQuery = requestTerminalColors(this.ui, (colors) => this.applyTerminalColors(colors));
+		this.terminalColorQuery = requestTerminalColors(
+			this.ui,
+			(colors) => this.applyTerminalColors(colors),
+			resolveTerminalColorQuery(this.getSettingsManager()),
+		);
 	}
 
 	/**

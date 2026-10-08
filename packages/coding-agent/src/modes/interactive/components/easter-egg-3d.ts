@@ -7,6 +7,7 @@ import {
 	getKeybindings,
 	indexedColor,
 	rgbColor,
+	type TerminalColors,
 	type TUI,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -841,13 +842,19 @@ let playing = false;
 
 /**
  * Show the animation as a fullscreen overlay until it is dismissed. The overlay takes focus and mouse input and
- * returns focus when hidden, so the rest of the UI keeps running underneath untouched.
+ * returns focus when hidden, so the rest of the UI keeps running underneath untouched. `queryColors` is the
+ * `terminal.queryColors` setting, so a channel that garbles the replies asks for nothing here either.
  */
-export async function playEasterEgg3d(tui: TUI, screen: readonly string[], egg: EasterEgg3d): Promise<void> {
+export async function playEasterEgg3d(
+	tui: TUI,
+	screen: readonly string[],
+	egg: EasterEgg3d,
+	queryColors: boolean,
+): Promise<void> {
 	if (playing) return;
 	playing = true;
 	// Fading needs the terminal's actual default colors; the theme only knows its own.
-	const reported = await tui.queryTerminalColors({ timeoutMs: 100 });
+	const reported: TerminalColors = queryColors ? await tui.queryTerminalColors({ timeoutMs: 100 }) : {};
 	const dark = theme.appearance === "dark";
 	const toRgbTuple = (rgb: { r: number; g: number; b: number } | undefined, fallback: Rgb): Rgb =>
 		rgb ? [rgb.r, rgb.g, rgb.b] : fallback;

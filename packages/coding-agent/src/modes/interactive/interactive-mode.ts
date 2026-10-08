@@ -1068,7 +1068,10 @@ export class InteractiveMode {
 				1,
 				0,
 			);
-			if (showLogo) header.onLogoClick = (column, row) => playPiLogo3d(this.renderer, column, row);
+			if (showLogo) {
+				header.onLogoClick = (column, row) =>
+					playPiLogo3d(this.renderer, column, row, this.settingsManager.getTerminalQueryColors());
+			}
 			this.builtInHeader = header;
 
 			// Setup UI layout
@@ -6972,7 +6975,7 @@ export class InteractiveMode {
 	}
 
 	private handleArminSaysHi(): void {
-		if (playArmin3d(this.renderer)) return;
+		if (playArmin3d(this.renderer, this.settingsManager.getTerminalQueryColors())) return;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new ArminComponent(this.ui));
 		this.ui.requestRender();

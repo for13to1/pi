@@ -1177,6 +1177,17 @@ export class SettingsManager {
 		};
 	}
 
+	/** Whether to query the terminal's colors at all. Default true. */
+	getTerminalQueryColors(): boolean {
+		return this.settings.terminal?.queryColors ?? true;
+	}
+
+	/** Whether to include the 16 ANSI palette colors. Undefined leaves the decision to the caller. */
+	getTerminalQueryPalette(): boolean | undefined {
+		const value = this.settings.terminal?.queryPalette;
+		return typeof value === "boolean" ? value : undefined;
+	}
+
 	getShowImages(): boolean {
 		return this.settings.terminal?.showImages ?? SETTINGS_DEFAULTS.terminal.showImages;
 	}

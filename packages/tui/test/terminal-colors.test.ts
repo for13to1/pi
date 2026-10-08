@@ -138,7 +138,7 @@ describe("TUI.queryTerminalColors", () => {
 	it("queries all colors in one write and consumes the replies", async () => {
 		const { terminal, tui, component } = setup();
 		try {
-			const query = tui.queryTerminalColors({ timeoutMs: 1000 });
+			const query = tui.queryTerminalColors({ timeoutMs: 1000, palette: true });
 			const written = terminal.writes.at(-1) ?? "";
 			assert.ok(written.startsWith("\x1b]10;?\x07\x1b]11;?\x07\x1b]4;0;?\x07") && written.endsWith("\x1b[c"));
 
@@ -162,8 +162,8 @@ describe("TUI.queryTerminalColors", () => {
 	it("resolves on DA1 with the replies that arrived, in query order", async () => {
 		const { terminal, tui } = setup();
 		try {
-			const first = tui.queryTerminalColors({ timeoutMs: 1000 });
-			const second = tui.queryTerminalColors({ timeoutMs: 1000 });
+			const first = tui.queryTerminalColors({ timeoutMs: 1000, palette: true });
+			const second = tui.queryTerminalColors({ timeoutMs: 1000, palette: true });
 			terminal.sendInput("\x1b]11;#000000\x07");
 			// An incomplete palette is dropped.
 			for (const reply of PALETTE_REPLIES.slice(0, 8)) terminal.sendInput(reply);
@@ -172,6 +172,27 @@ describe("TUI.queryTerminalColors", () => {
 
 			assert.deepStrictEqual(await first, { foreground: undefined, background: BLACK, palette: undefined });
 			assert.deepStrictEqual(await second, { foreground: undefined, background: undefined, palette: undefined });
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not let an out-of-range palette index complete the query (issue #10250)", async () => {
+		const { terminal, tui } = setup();
+		try {
+			const query = tui.queryTerminalColors({ timeoutMs: 1000, palette: true });
+			terminal.sendInput("\x1b]10;#ffffff\x07");
+			terminal.sendInput("\x1b]11;#000000\x07");
+			for (const reply of PALETTE_REPLIES.slice(0, 15)) terminal.sendInput(reply);
+			// Index 42 was never asked for. Counting it would settle a query whose palette is incomplete.
+			terminal.sendInput("\x1b]4;42;#000000\x07");
+
+			terminal.sendInput(PALETTE_REPLIES[15]!);
+			assert.deepStrictEqual(await query, {
+				foreground: WHITE,
+				background: BLACK,
+				palette: Array.from({ length: 16 }, () => BLACK),
+			});
 		} finally {
 			tui.stop();
 		}
@@ -193,6 +214,20 @@ describe("TUI.queryTerminalColors", () => {
 			// With no query pending, color replies are ordinary input again.
 			terminal.sendInput("\x1b]11;#ffffff\x07");
 			assert.deepStrictEqual(component.inputs, ["\x1b]11;#ffffff\x07"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("asks only for the default colors unless the caller asks for the palette (issue #10250)", async () => {
+		const { terminal, tui } = setup();
+		try {
+			const query = tui.queryTerminalColors({ timeoutMs: 100 });
+			assert.strictEqual(terminal.writes.at(-1), "\x1b]10;?\x07\x1b]11;?\x07\x1b[c");
+
+			terminal.sendInput("\x1b]10;#ffffff\x07");
+			terminal.sendInput("\x1b]11;#000000\x07");
+			assert.deepStrictEqual(await query, { foreground: WHITE, background: BLACK, palette: undefined });
 		} finally {
 			tui.stop();
 		}

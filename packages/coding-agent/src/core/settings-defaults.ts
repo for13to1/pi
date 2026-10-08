@@ -36,6 +36,7 @@ export const SETTINGS_DEFAULTS = {
 		imageWidthCells: 60,
 		clearOnShrink: false,
 		showTerminalProgress: false,
+		queryColors: true,
 	},
 	images: {
 		autoResize: true,

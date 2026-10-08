@@ -146,7 +146,8 @@ export type TuiInputListener = (data: string) => TuiInputListenerResult;
 type PendingTerminalColorQuery = {
 	foreground?: RgbColor;
 	background?: RgbColor;
-	palette: Array<RgbColor | undefined>;
+	/** Palette colors, present only when the query asked for them. */
+	palette: Array<RgbColor | undefined> | undefined;
 	/** Targets that already replied, so duplicates do not count twice. */
 	replied: Set<string>;
 	/**
@@ -158,17 +159,27 @@ type PendingTerminalColorQuery = {
 };
 
 const TERMINAL_PALETTE_SIZE = 16;
-/** OSC 10 and 11 plus OSC 4 for every palette color. */
-const TERMINAL_COLOR_REPLY_COUNT = 2 + TERMINAL_PALETTE_SIZE;
+/** OSC 10 and 11: the default foreground and background. */
+const TERMINAL_COLOR_REPLY_COUNT = 2;
 /**
- * Default colors, palette colors 0-15, and a trailing primary device attributes (DA1) request.
- * Every terminal answers DA1 and terminals answer in order, so the DA1 reply marks the end of
- * the color replies, including for terminals that ignore the color queries.
+ * Default foreground and background. tmux answers these itself and does not forward them, so asking is safe
+ * on 3.6.x; a terminal that stays silent is covered by the timeout.
  */
-const TERMINAL_COLOR_QUERY = `\x1b]10;?\x07\x1b]11;?\x07${Array.from(
+const TERMINAL_COLOR_QUERY = "\x1b]10;?\x07\x1b]11;?\x07";
+/**
+ * The 16 ANSI palette colors. Opt-in because tmux 3.6.x relays this query to the outer terminal, and a
+ * relayed reply that arrives split can be misread as typing. tmux issue 4665 added that relay in 3.6;
+ * tmux issues 4749 and 4793 are the reports behind the two fixes in 3.7. See `palette` below.
+ */
+const TERMINAL_PALETTE_QUERY = Array.from(
 	{ length: TERMINAL_PALETTE_SIZE },
 	(_, index) => `\x1b]4;${index};?\x07`,
-).join("")}\x1b[c`;
+).join("");
+/**
+ * A trailing primary device attributes (DA1) request marks the end of the replies. Terminals answer it in
+ * order with the rest, including ones that ignore the color queries; the timeout covers no answer.
+ */
+const TERMINAL_COLOR_QUERY_SENTINEL = "\x1b[c";
 const DEVICE_ATTRIBUTES_RESPONSE_PATTERN = /^\x1b\[\?[\d;]*c$/;
 
 /**
@@ -489,6 +500,8 @@ export interface TUI extends Component {
 	queryTerminalColors(options: {
 		timeoutMs: number;
 		onLateReply?: (colors: TerminalColors) => void;
+		/** Also ask for the 16 ANSI palette colors. Off by default; see `TERMINAL_PALETTE_QUERY`. */
+		palette?: boolean;
 	}): Promise<TerminalColors>;
 }
 
@@ -1150,22 +1163,29 @@ export abstract class TuiBase extends Container implements TUI {
 		if (!query.deliver || query.replied.has(key)) {
 			return true;
 		}
+		// This query counts a palette reply only when it asked for the palette and the index is in range;
+		// counting another index would settle the query with an incomplete palette.
+		if (typeof target === "number" && (query.palette === undefined || target >= TERMINAL_PALETTE_SIZE)) {
+			return true;
+		}
 		query.replied.add(key);
 		if (target === "foreground") {
 			query.foreground = rgb;
 		} else if (target === "background") {
 			query.background = rgb;
-		} else if (target < TERMINAL_PALETTE_SIZE) {
-			query.palette[target] = rgb;
+		} else {
+			query.palette![target] = rgb;
 		}
-		if (query.replied.size === TERMINAL_COLOR_REPLY_COUNT) {
+		const replyCount =
+			query.palette === undefined ? TERMINAL_COLOR_REPLY_COUNT : TERMINAL_COLOR_REPLY_COUNT + TERMINAL_PALETTE_SIZE;
+		if (query.replied.size === replyCount) {
 			this.completeTerminalColorQuery(query);
 		}
 		return true;
 	}
 
 	private terminalColorQueryResult(query: PendingTerminalColorQuery): TerminalColors {
-		const palette = query.palette.every((color) => color !== undefined) ? (query.palette as RgbColor[]) : undefined;
+		const palette = query.palette?.every((color) => color !== undefined) ? (query.palette as RgbColor[]) : undefined;
 		return { foreground: query.foreground, background: query.background, palette };
 	}
 
@@ -1484,23 +1504,26 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/**
-	 * Query the terminal's theme colors: the default foreground (OSC 10), the default background
-	 * (OSC 11), and ANSI colors 0-15 (OSC 4), followed by a DA1 request that marks the end of the
-	 * replies. Resolves when the DA1 reply or all color replies arrive, or when the timeout expires.
+	 * Query the terminal's theme colors: the default foreground (OSC 10) and default background (OSC 11),
+	 * plus ANSI colors 0-15 (OSC 4) when `palette` is set, followed by a DA1 request that marks the end of
+	 * the replies. Resolves when the DA1 reply or all color replies arrive, or when the timeout expires.
 	 * Colors the terminal did not report are undefined; the palette is only set when all 16 arrived.
 	 * @param timeoutMs Query timeout in milliseconds, for terminals that do not answer DA1 either.
 	 * @param onLateReply Receives the replies if the query completes after the timeout, e.g. over slow links.
+	 * @param palette Also ask for the 16 ANSI colors. Off by default; see `TERMINAL_PALETTE_QUERY`.
 	 */
 	queryTerminalColors({
 		timeoutMs,
 		onLateReply,
+		palette = false,
 	}: {
 		timeoutMs: number;
 		onLateReply?: (colors: TerminalColors) => void;
+		palette?: boolean;
 	}): Promise<TerminalColors> {
 		return new Promise((resolve) => {
 			const query: PendingTerminalColorQuery = {
-				palette: Array.from({ length: TERMINAL_PALETTE_SIZE }, () => undefined),
+				palette: palette ? Array.from({ length: TERMINAL_PALETTE_SIZE }, () => undefined) : undefined,
 				replied: new Set(),
 				deliver: resolve,
 				timer: undefined,
@@ -1511,7 +1534,9 @@ export abstract class TuiBase extends Container implements TUI {
 				resolve(this.terminalColorQueryResult(query));
 			}, timeoutMs);
 			this.pendingTerminalColorQueries.push(query);
-			this.terminal.write(TERMINAL_COLOR_QUERY);
+			this.terminal.write(
+				`${TERMINAL_COLOR_QUERY}${palette ? TERMINAL_PALETTE_QUERY : ""}${TERMINAL_COLOR_QUERY_SENTINEL}`,
+			);
 		});
 	}
 }
