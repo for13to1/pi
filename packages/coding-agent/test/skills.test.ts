@@ -1,5 +1,6 @@
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { dirname, join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
 import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.ts";
@@ -387,6 +388,64 @@ describe("skills", () => {
 				includeDefaults: true,
 			});
 			expect(withTilde.length).toBe(withoutTilde.length);
+		});
+	});
+
+	describe("ignore anchoring", () => {
+		// Regression for #10877: a leading "/" anchors the pattern to the scan root.
+		function withTempSkills(files: Record<string, string>): { dir: string; cleanup: () => void } {
+			const root = mkdtempSync(join(tmpdir(), "pi-skills-ignore-"));
+			const skills = join(root, "skills");
+			mkdirSync(skills, { recursive: true });
+			for (const [rel, content] of Object.entries(files)) {
+				const full = join(skills, rel);
+				mkdirSync(dirname(full), { recursive: true });
+				writeFileSync(full, content);
+			}
+			return { dir: skills, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+		}
+
+		it("should keep a root-anchored whitelist (/* with !/name/) working", () => {
+			const { dir, cleanup } = withTempSkills({
+				".gitignore": "/*\n!/keep-me/\n",
+				"keep-me/SKILL.md": "---\nname: keep-me\ndescription: kept\n---\n",
+				"other/SKILL.md": "---\nname: other\ndescription: ignored\n---\n",
+			});
+			try {
+				const { skills } = loadSkillsFromDir({ dir, source: "test" });
+				expect(skills.map((s) => s.name)).toEqual(["keep-me"]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("should keep anchored non-whitelist entries ignored", () => {
+			const { dir, cleanup } = withTempSkills({
+				".gitignore": "/vendor-link\n",
+				"vendor-link/SKILL.md": "---\nname: vendor-link\ndescription: ignored\n---\n",
+				"nested/vendor-link/SKILL.md": "---\nname: nested-vendor-link\ndescription: kept\n---\n",
+			});
+			try {
+				const { skills } = loadSkillsFromDir({ dir, source: "test" });
+				expect(skills.map((s) => s.name)).toEqual(["nested-vendor-link"]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("should strip the slash when prefixing a nested ignore file", () => {
+			const { dir, cleanup } = withTempSkills({
+				"group/.gitignore": "/venv\n",
+				"group/a/SKILL.md": "---\nname: a\ndescription: kept\n---\n",
+				"group/venv/SKILL.md": "---\nname: v\ndescription: ignored\n---\n",
+				"venv/SKILL.md": "---\nname: top-venv\ndescription: kept\n---\n",
+			});
+			try {
+				const { skills } = loadSkillsFromDir({ dir, source: "test" });
+				expect(skills.map((s) => s.name).sort()).toEqual(["a", "top-venv"]);
+			} finally {
+				cleanup();
+			}
 		});
 	});
 

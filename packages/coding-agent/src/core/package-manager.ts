@@ -256,7 +256,8 @@ function prefixIgnorePattern(line: string, prefix: string): string | null {
 		pattern = pattern.slice(1);
 	}
 
-	if (pattern.startsWith("/")) {
+	// Keep the root anchor; drop it only when prefixing a nested ignore file.
+	if (prefix && pattern.startsWith("/")) {
 		pattern = pattern.slice(1);
 	}
 

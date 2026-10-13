@@ -597,6 +597,27 @@ Content`,
 			const result = await packageManager.resolve();
 			expect(result.skills.some((r) => r.path === skillPath && r.enabled)).toBe(true);
 		});
+
+		// Regression for #10877: a leading "/" anchors the pattern to the scan root.
+		it("should honor a root-anchored whitelist in a skill directory", async () => {
+			const skillsDir = join(agentDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			writeFileSync(join(skillsDir, ".gitignore"), "/*\n!/keep-me/\n");
+
+			const keptPath = join(skillsDir, "keep-me", "SKILL.md");
+			mkdirSync(join(skillsDir, "keep-me"), { recursive: true });
+			writeFileSync(keptPath, "---\nname: keep-me\ndescription: Kept\n---\nContent");
+
+			const otherPath = join(skillsDir, "other", "SKILL.md");
+			mkdirSync(join(skillsDir, "other"), { recursive: true });
+			writeFileSync(otherPath, "---\nname: other\ndescription: Ignored\n---\nContent");
+
+			settingsManager.setSkillPaths(["skills"]);
+
+			const result = await packageManager.resolve();
+			expect(result.skills.some((r) => r.path === keptPath && r.enabled)).toBe(true);
+			expect(result.skills.some((r) => r.path === otherPath && r.enabled)).toBe(false);
+		});
 	});
 
 	describe("resolveExtensionSources", () => {
